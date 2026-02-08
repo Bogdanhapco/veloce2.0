@@ -6,90 +6,108 @@ import asyncio
 import edge_tts
 from moviepy.editor import VideoFileClip, AudioFileClip
 
-st.title("Veloce 2.0")
+st.set_page_config(page_title="Veloce 2.0", layout="wide")
 
-# Load your Hugging Face token from secrets (secure for deployment)
-try:
-    api_token = st.secrets["HF_TOKEN"]
-except KeyError:
-    st.error("HF_TOKEN not found in secrets. Add it in .streamlit/secrets.toml (local) or in the app's Secrets settings (deployed on Streamlit Cloud). Get a free token at https://huggingface.co/settings/tokens")
+st.title("Veloce 2.0")
+st.markdown("**Free AI text-to-video generator** with added voiceover — powered by Hugging Face (no payment required)")
+
+# ── Load Hugging Face token from secrets ──
+if "HF_TOKEN" not in st.secrets:
+    st.error("HF_TOKEN is missing from secrets.\n\n"
+             "**Local fix:** Create `.streamlit/secrets.toml` with:\n"
+             "```toml\nHF_TOKEN = \"hf_xxxxxxxxxxxx\"\n```\n\n"
+             "**Cloud fix:** Go to Manage app → Secrets → add HF_TOKEN")
     st.stop()
 
+api_token = st.secrets["HF_TOKEN"]
+
+# ── User inputs ──
 prompt = st.text_area(
-    "Enter your video prompt (e.g., 'A cat jumping over the moon in a starry night sky')",
-    height=120
+    "Describe your video",
+    placeholder="A futuristic city at night with flying cars and neon lights, cinematic style",
+    height=110
 )
 
-aspect_ratio = st.radio("Aspect Ratio", ["16:9 (Landscape)", "9:16 (Portrait)"], index=0)
-duration_sec = st.radio("Duration (approximate)", ["Short (~5-8 seconds)", "Longer (~10 seconds)"], index=0)
+col1, col2 = st.columns(2)
+with col1:
+    aspect = st.radio("Aspect ratio", ["16:9 (widescreen)", "9:16 (vertical)"], index=0)
+with col2:
+    duration_choice = st.radio("Approximate length", ["Short (~5–8 s)", "Longer (~10 s)"], index=0)
 
-if st.button("Generate Video"):
+if st.button("Generate Video", type="primary", use_container_width=True):
     if not prompt.strip():
-        st.error("Please enter a prompt.")
+        st.warning("Please write a prompt first.")
+        st.stop()
+
+    # Build enhanced prompt (helps the model understand aspect & length)
+    enhanced_prompt = prompt.strip()
+    if aspect == "16:9 (widescreen)":
+        enhanced_prompt += ", 16:9 aspect ratio, horizontal cinematic view"
     else:
-        # Enhance prompt since direct resolution/frames control is limited on this free model
-        enhanced_prompt = prompt.strip()
-        if aspect_ratio == "16:9 (Landscape)":
-            enhanced_prompt += ", widescreen 16:9 aspect ratio, cinematic landscape view, horizontal format"
-        else:
-            enhanced_prompt += ", vertical 9:16 aspect ratio, portrait mode for mobile or social media, tall format"
-        enhanced_prompt += f", smooth motion, approximately {duration_sec.lower()}, high detail, dynamic scene"
+        enhanced_prompt += ", 9:16 aspect ratio, vertical portrait format for mobile"
+    enhanced_prompt += f", smooth animation, approximately {duration_choice.lower()}, detailed scene"
 
-        with st.spinner("Generating AI video (silent clip) + adding voiceover... This free model may take 1-5 minutes"):
-            try:
-                client = InferenceClient(token=api_token)
+    with st.spinner("Generating video clip + voiceover (1–5 minutes)…"):
+        try:
+            client = InferenceClient(token=api_token)
 
-                # Call the free text-to-video model (no credits needed for this one)
-                video_bytes = client.text_to_video(
-                    prompt=enhanced_prompt,
-                    model="damo-vilab/text-to-video-ms-1.7b"
-                )
+            # ── Generate silent video (free model) ──
+            video_bytes = client.text_to_video(
+                prompt=enhanced_prompt,
+                model="damo-vilab/text-to-video-ms-1.7b"
+            )
 
-                # Save silent video temporarily
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_vid:
-                    tmp_vid.write(video_bytes)
-                    video_path = tmp_vid.name
+            # Save video temporarily
+            vid_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            vid_file.write(video_bytes)
+            video_path = vid_file.name
+            vid_file.close()
 
-                # Generate free voiceover with EdgeTTS (Microsoft neural voices)
-                async def generate_audio():
-                    # Pick a voice (change if you want female/other accent)
-                    voice = "en-US-GuyNeural"  # Good male US voice
-                    # Limit text length to avoid TTS cut-off
-                    tts_text = prompt[:300] + "..." if len(prompt) > 300 else prompt
-                    communicate = edge_tts.Communicate(tts_text, voice)
-                    audio_path = tempfile.mktemp(suffix=".mp3")
-                    await communicate.save(audio_path)
-                    return audio_path
+            # ── Generate voiceover (free EdgeTTS) ──
+            async def create_voiceover():
+                voice = "en-US-GuyNeural"          # change to en-GB-SoniaNeural, etc. if desired
+                text = prompt[:280] + "…" if len(prompt) > 280 else prompt
+                comm = edge_tts.Communicate(text, voice)
+                audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                await comm.save(audio_file.name)
+                return audio_file.name
 
-                audio_path = asyncio.run(generate_audio())
+            audio_path = asyncio.run(create_voiceover())
 
-                # Merge video + audio with MoviePy
-                video_clip = VideoFileClip(video_path)
-                audio_clip = AudioFileClip(audio_path)
+            # ── Merge video + audio ──
+            video = VideoFileClip(video_path)
+            audio = AudioFileClip(audio_path)
 
-                # Adjust audio to match video length (trim if longer, or you can loop if shorter)
-                if audio_clip.duration > video_clip.duration:
-                    audio_clip = audio_clip.subclip(0, video_clip.duration)
-                else:
-                    audio_clip = audio_clip.set_duration(video_clip.duration)
+            # Match durations
+            audio = audio.set_duration(video.duration)
 
-                final_clip = video_clip.set_audio(audio_clip)
-                final_path = tempfile.mktemp(suffix=".mp4")
-                final_clip.write_videofile(final_path, codec="libx264", audio_codec="aac", verbose=False, logger=None)
+            final = video.set_audio(audio)
+            final_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            final.write_videofile(
+                final_file.name,
+                codec="libx264",
+                audio_codec="aac",
+                verbose=False,
+                logger=None
+            )
+            final_path = final_file.name
 
-                # Show the result
-                st.video(final_path)
-                st.success("Video generated! Short AI clip with synced voiceover (free model, quality is basic but no cost).")
+            # ── Display result ──
+            st.success("Done! Here's your video with voiceover.")
+            st.video(final_path)
 
-                # Clean up temp files
-                for path in [video_path, audio_path, final_path]:
-                    if os.path.exists(path):
-                        os.remove(path)
+            # Clean up
+            for p in [video_path, audio_path, final_path]:
+                if os.path.exists(p):
+                    os.remove(p)
 
-            except Exception as e:
-                st.error(f"Oops — generation failed: {str(e)}\n\n"
-                         "Common fixes:\n"
-                         "- Make sure your HF_TOKEN is valid (free account/token works for this model).\n"
-                         "- Try a shorter/simpler prompt.\n"
-                         "- The free Inference API can queue or rate-limit — wait a minute and retry.\n"
-                         "- If stuck, test the model directly in this free Space: https://huggingface.co/spaces/damo-vilab/modelscope-text-to-video-synthesis")
+        except Exception as e:
+            st.error(f"Something went wrong:\n\n{str(e)}\n\n"
+                     "**Quick fixes:**\n"
+                     "• Check your HF_TOKEN is valid\n"
+                     "• Try shorter prompt\n"
+                     "• Wait 1–2 min and retry (free API can queue)\n"
+                     "• Test model here: https://huggingface.co/spaces/damo-vilab/modelscope-text-to-video-synthesis")
+
+st.markdown("---")
+st.caption("Veloce 2.0 • Free Hugging Face model • Voice added with EdgeTTS • Deployed on Streamlit Cloud")
