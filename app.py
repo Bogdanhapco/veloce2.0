@@ -5,67 +5,70 @@ import os
 
 st.title("Veloce 2.0")
 
-# Load token from secrets (no user input needed)
+# Load token from secrets
 try:
     api_token = st.secrets["HF_TOKEN"]
 except KeyError:
-    st.error("HF_TOKEN not found in secrets. Please add it in .streamlit/secrets.toml (local) or in the app's Secrets settings (deployed).")
+    st.error("HF_TOKEN not found in secrets. Add it in .streamlit/secrets.toml (local) or app Secrets (deployed).")
     st.stop()
 
-prompt = st.text_area("Enter your video prompt (e.g., 'A serene mountain lake at sunrise with birds flying and gentle wind sounds')", height=120)
+prompt = st.text_area("Enter your video prompt\n(e.g., 'A serene mountain lake at sunrise with birds flying and gentle wind sounds')", height=120)
 
-# Aspect ratio selector
+# Aspect ratio selector (appended to prompt since direct control limited)
 aspect_ratio = st.radio("Aspect Ratio", ["16:9 (Landscape)", "9:16 (Portrait)"], index=0)
 
-# Duration selector
+# Duration selector (appended to prompt)
 duration_sec = st.radio("Duration", ["10 seconds", "15 seconds"], index=0)
+
+# Model selector (fallback options that work on Inference API)
+model_options = {
+    "Best Open-Source Quality (Wan2.2)": "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+    "Realistic Motion (Hunyuan)": "tencent/HunyuanVideo-1.5",
+    "Fast & Reliable Fallback": "damo-vilab/text-to-video-ms-1.7b"
+}
+selected_model = st.selectbox("Model", list(model_options.keys()))
+model_id = model_options[selected_model]
 
 if st.button("Generate Video"):
     if not prompt.strip():
         st.error("Please enter a prompt.")
     else:
-        with st.spinner("Generating video with synced audio... (1-10+ min depending on load)"):
+        # Enhance prompt with aspect/duration (since direct params not supported)
+        enhanced_prompt = prompt
+        if aspect_ratio == "16:9 (Landscape)":
+            enhanced_prompt += ", widescreen 16:9 aspect ratio"
+        else:
+            enhanced_prompt += ", vertical 9:16 aspect ratio, portrait mode"
+        enhanced_prompt += f", approximately {duration_sec} duration"
+
+        with st.spinner("Generating video with synced audio... (1-10+ min; may queue)"):
             try:
                 client = InferenceClient(token=api_token)
 
-                # Map selections to params
-                if aspect_ratio == "16:9 (Landscape)":
-                    width, height = 768, 432  # Balanced; try 1280,720 if provider supports
-                else:  # 9:16
-                    width, height = 432, 768
-
-                if duration_sec == "10 seconds":
-                    num_frames = 250  # ~25 fps
-                else:
-                    num_frames = 375  # ~25 fps for 15s
-
-                # Generate using LTX-2 (outputs MP4 with native audio)
+                # Core call — only prompt + model (no width/height/num_frames)
                 video_bytes = client.text_to_video(
-                    prompt=prompt,
-                    model="Lightricks/LTX-2",
-                    num_inference_steps=25,     # 20-40 range for balance
-                    num_frames=num_frames,
-                    width=width,
-                    height=height,
-                    guidance_scale=7.0
+                    prompt=enhanced_prompt,
+                    model=model_id,
+                    # Optional: if a provider supports it, you can try parameters=dict(...)
+                    # parameters={"num_inference_steps": 25, "guidance_scale": 7.0}  # Uncomment/test if errors allow
                 )
 
-                # Save to temporary file
+                # Save temp
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
                     tmp_file.write(video_bytes)
                     video_path = tmp_file.name
 
-                # Display the result
                 st.video(video_path)
-                st.success("Video generated successfully! (includes synced audio)")
+                st.success("Video generated! (native audio where supported)")
 
-                # Optional: clean up after display
+                # Optional cleanup
                 # os.remove(video_path)
 
             except Exception as e:
-                st.error(f"Generation error: {str(e)}\n\n"
-                         "Tips:\n"
-                         "- Make sure your HF_TOKEN is a valid read/write or fine-grained token with Inference API access.\n"
-                         "- Try shorter prompt, 10-second duration, or lower resolution first.\n"
-                         "- Model may queue on free-tier providers — retry later.\n"
-                         "- Test directly in a Hugging Face Space (search 'LTX-2').")
+                st.error(f"Error: {str(e)}\n\n"
+                         "Common fixes:\n"
+                         "- Your token must have Inference API access (create new at huggingface.co/settings/tokens).\n"
+                         "- Try a different model from the dropdown.\n"
+                         "- Simplify prompt or use 10 seconds.\n"
+                         "- Providers can queue heavy models — retry in a few minutes.\n"
+                         "- For LTX-2 specifically: Not reliably on free Inference API yet; test in its official Space first (search 'LTX-2' on huggingface.co/spaces).")
