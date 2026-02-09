@@ -35,8 +35,23 @@ if st.sidebar.button("🔌 Test Connection"):
     try:
         client = Client(gradio_url)
         st.sidebar.success("✅ Connected successfully!")
-        with st.sidebar.expander("Available API endpoints"):
-            st.code(client.view_api())
+        
+        # Get API info
+        try:
+            api_info = client.view_api()
+            
+            with st.sidebar.expander("📋 API Information", expanded=True):
+                st.code(str(api_info))
+                
+                st.markdown("---")
+                st.markdown("**🎯 How to use:**")
+                st.markdown("Look for `fn_index=0`, `fn_index=1`, etc.")
+                st.markdown("The app will try these automatically!")
+                
+        except Exception as e:
+            st.sidebar.warning("Could not fetch API details")
+            st.sidebar.code(str(e))
+            
     except Exception as e:
         st.sidebar.error(f"❌ Connection failed: {str(e)}")
         st.sidebar.info("Make sure your Pinokio app is running!")
@@ -112,35 +127,46 @@ if st.button("🎬 Generate Video", type="primary", use_container_width=True):
             progress_bar.progress(30)
             
             try:
-                # First, get the API info to find the correct endpoint
-                api_info = str(client.view_api())
+                # First, try to get API info
+                st.info("🔍 Checking available endpoints...")
                 
-                # Most Gradio apps use index 0 or the first function
-                # Try calling without specifying api_name (uses default)
+                # Try calling with fn_index=0 (first function)
                 result = client.predict(
                     prompt,
-                    duration,
-                    width,
-                    height,
-                    guidance_scale,
-                    num_inference_steps,
+                    fn_index=0
                 )
                 
             except Exception as e:
-                st.warning(f"Trying simpler API call... ({str(e)})")
+                st.warning(f"First attempt failed, trying with more parameters... ({str(e)})")
                 try:
-                    # Try with just the prompt
-                    result = client.predict(prompt)
+                    # Try with all parameters using fn_index
+                    result = client.predict(
+                        prompt,
+                        duration,
+                        width,
+                        height,
+                        guidance_scale,
+                        num_inference_steps,
+                        fn_index=0
+                    )
                 except Exception as e2:
-                    # Try with api_name as index
+                    st.warning(f"Second attempt failed, trying alternative... ({str(e2)})")
                     try:
+                        # Try fn_index=1 (second function if exists)
                         result = client.predict(
                             prompt,
-                            api_name=0  # Try first endpoint
+                            fn_index=1
                         )
                     except Exception as e3:
-                        st.error(f"All API call attempts failed. Please check the endpoint name.")
-                        st.info("Click 'Test Connection' in sidebar to see available endpoints")
+                        st.error(f"All API call attempts failed.")
+                        st.error("Please click 'Test Connection' in the sidebar to see available endpoints.")
+                        
+                        # Show detailed error info
+                        with st.expander("🐛 Detailed Error Info"):
+                            st.code(f"Attempt 1: {str(e)}")
+                            st.code(f"Attempt 2: {str(e2)}")
+                            st.code(f"Attempt 3: {str(e3)}")
+                        
                         raise e3
             
             progress_bar.progress(80)
