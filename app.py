@@ -1,113 +1,196 @@
 import streamlit as st
-from huggingface_hub import InferenceClient
-import tempfile
+from gradio_client import Client
+from gtts import gTTS
 import os
-import asyncio
-import edge_tts
-from moviepy.editor import VideoFileClip, AudioFileClip
+import time
+from pathlib import Path
 
-st.set_page_config(page_title="Veloce 2.0", layout="wide")
-
-st.title("Veloce 2.0")
-st.markdown("**Free AI text-to-video generator** with added voiceover — powered by Hugging Face (no payment required)")
-
-# ── Load Hugging Face token from secrets ──
-if "HF_TOKEN" not in st.secrets:
-    st.error("HF_TOKEN is missing from secrets.\n\n"
-             "**Local fix:** Create `.streamlit/secrets.toml` with:\n"
-             "```toml\nHF_TOKEN = \"hf_xxxxxxxxxxxx\"\n```\n\n"
-             "**Cloud fix:** Go to Manage app → Secrets → add HF_TOKEN")
-    st.stop()
-
-api_token = st.secrets["HF_TOKEN"]
-
-# ── User inputs ──
-prompt = st.text_area(
-    "Describe your video",
-    placeholder="A futuristic city at night with flying cars and neon lights, cinematic style",
-    height=110
+# Page config
+st.set_page_config(
+    page_title="AI Video Generator",
+    page_icon="🎥",
+    layout="wide"
 )
 
-col1, col2 = st.columns(2)
+# Title
+st.title("🎥 Veloce")
+st.markdown("Generate videos using Veloce model")
+
+# Sidebar for settings
+st.sidebar.header("⚙️ Settings")
+
+# Gradio URL input
+gradio_url = st.sidebar.text_input(
+    "Gradio URL",
+    value="https://5a84f7d44bed240468.gradio.live",
+    help="The URL from your Pinokio Gradio instance (gradio.live link)"
+)
+
+# Test connection button
+if st.sidebar.button("🔌 Test Connection"):
+    try:
+        client = Client(gradio_url)
+        st.sidebar.success("✅ Connected successfully!")
+        with st.sidebar.expander("Available API endpoints"):
+            st.code(client.view_api())
+    except Exception as e:
+        st.sidebar.error(f"❌ Connection failed: {str(e)}")
+        st.sidebar.info("Make sure your Pinokio app is running!")
+
+# Main content
+col1, col2 = st.columns([2, 1])
+
 with col1:
-    aspect = st.radio("Aspect ratio", ["16:9 (widescreen)", "9:16 (vertical)"], index=0)
+    st.subheader("Video Generation")
+    
+    # Video prompt
+    prompt = st.text_area(
+        "Enter your video prompt:",
+        value="A cat playing piano in a cozy room, cinematic lighting",
+        height=100,
+        help="Describe the video you want to generate"
+    )
+    
+    # Additional parameters
+    with st.expander("🎛️ Advanced Settings"):
+        duration = st.slider("Duration (frames)", 25, 121, 57, help="Number of frames to generate")
+        width = st.selectbox("Width", [512, 704, 768], index=1)
+        height = st.selectbox("Height", [512, 704, 768], index=1)
+        guidance_scale = st.slider("Guidance Scale", 1.0, 10.0, 3.0, 0.5)
+        num_inference_steps = st.slider("Inference Steps", 10, 50, 30)
+
 with col2:
-    duration_choice = st.radio("Approximate length", ["Short (~5–8 s)", "Longer (~10 s)"], index=0)
+    st.subheader("Audio (Optional)")
+    
+    add_audio = st.checkbox("Add narration/audio")
+    
+    if add_audio:
+        audio_text = st.text_area(
+            "Narration text:",
+            value="",
+            height=100,
+            help="Text to convert to speech"
+        )
+        
+        voice_lang = st.selectbox(
+            "Language",
+            ["en", "es", "fr", "de", "it", "pt", "ru", "ja", "ko"],
+            help="Select TTS language"
+        )
 
-if st.button("Generate Video", type="primary", use_container_width=True):
-    if not prompt.strip():
-        st.warning("Please write a prompt first.")
-        st.stop()
-
-    # Build enhanced prompt (helps the model understand aspect & length)
-    enhanced_prompt = prompt.strip()
-    if aspect == "16:9 (widescreen)":
-        enhanced_prompt += ", 16:9 aspect ratio, horizontal cinematic view"
-    else:
-        enhanced_prompt += ", 9:16 aspect ratio, vertical portrait format for mobile"
-    enhanced_prompt += f", smooth animation, approximately {duration_choice.lower()}, detailed scene"
-
-    with st.spinner("Generating video clip + voiceover (1–5 minutes)…"):
-        try:
-            client = InferenceClient(token=api_token)
-
-            # ── Generate silent video (free model) ──
-            video_bytes = client.text_to_video(
-                prompt=enhanced_prompt,
-                model="damo-vilab/text-to-video-ms-1.7b"
-            )
-
-            # Save video temporarily
-            vid_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            vid_file.write(video_bytes)
-            video_path = vid_file.name
-            vid_file.close()
-
-            # ── Generate voiceover (free EdgeTTS) ──
-            async def create_voiceover():
-                voice = "en-US-GuyNeural"          # change to en-GB-SoniaNeural, etc. if desired
-                text = prompt[:280] + "…" if len(prompt) > 280 else prompt
-                comm = edge_tts.Communicate(text, voice)
-                audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-                await comm.save(audio_file.name)
-                return audio_file.name
-
-            audio_path = asyncio.run(create_voiceover())
-
-            # ── Merge video + audio ──
-            video = VideoFileClip(video_path)
-            audio = AudioFileClip(audio_path)
-
-            # Match durations
-            audio = audio.set_duration(video.duration)
-
-            final = video.set_audio(audio)
-            final_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            final.write_videofile(
-                final_file.name,
-                codec="libx264",
-                audio_codec="aac",
-                verbose=False,
-                logger=None
-            )
-            final_path = final_file.name
-
-            # ── Display result ──
-            st.success("Done! Here's your video with voiceover.")
-            st.video(final_path)
-
-            # Clean up
-            for p in [video_path, audio_path, final_path]:
-                if os.path.exists(p):
-                    os.remove(p)
-
-        except Exception as e:
-            st.error(f"Something went wrong:\n\n{str(e)}\n\n"
-                     "**Quick fixes:**\n"
-                     "• Check your HF_TOKEN is valid\n"
-                     "• Try shorter prompt\n"
-                     "• Wait 1–2 min and retry (free API can queue)\n"
-                     "• Test model here: https://huggingface.co/spaces/damo-vilab/modelscope-text-to-video-synthesis")
-
+# Generate button
 st.markdown("---")
-st.caption("Veloce 2.0 • Free Hugging Face model • Voice added with EdgeTTS • Deployed on Streamlit Cloud")
+
+if st.button("🎬 Generate Video", type="primary", use_container_width=True):
+    
+    if not prompt.strip():
+        st.error("Please enter a prompt!")
+    else:
+        # Create output directory
+        output_dir = Path("outputs")
+        output_dir.mkdir(exist_ok=True)
+        
+        try:
+            # Connect to Gradio
+            with st.spinner("Connecting to LTX-2 model..."):
+                client = Client(gradio_url)
+            
+            st.info("🎨 Generating video... This may take a few minutes.")
+            
+            # Progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Call the Gradio API
+            # Note: Adjust the parameters based on your actual Gradio interface
+            # You may need to modify this based on the API structure
+            status_text.text("Generating video...")
+            progress_bar.progress(30)
+            
+            try:
+                # Try common Gradio endpoints
+                # Adjust based on your actual API (use client.view_api() to check)
+                result = client.predict(
+                    prompt,
+                    duration,
+                    width,
+                    height,
+                    guidance_scale,
+                    num_inference_steps,
+                    api_name="/generate"  # Change this if needed
+                )
+                
+            except Exception as e:
+                # Fallback to simpler call
+                st.warning(f"Trying alternative API call... ({str(e)})")
+                result = client.predict(
+                    prompt,
+                    api_name="/predict"
+                )
+            
+            progress_bar.progress(80)
+            status_text.text("Processing output...")
+            
+            # Display the video
+            st.success("✅ Video generated successfully!")
+            progress_bar.progress(100)
+            
+            # Handle different result types
+            if isinstance(result, str):
+                video_path = result
+            elif isinstance(result, tuple):
+                video_path = result[0]
+            else:
+                video_path = result
+            
+            # Display video
+            st.video(video_path)
+            
+            # Download button
+            with open(video_path, 'rb') as f:
+                st.download_button(
+                    label="📥 Download Video",
+                    data=f,
+                    file_name=f"generated_video_{int(time.time())}.mp4",
+                    mime="video/mp4"
+                )
+            
+            # Generate audio if requested
+            if add_audio and audio_text.strip():
+                with st.spinner("Generating audio..."):
+                    tts = gTTS(text=audio_text, lang=voice_lang)
+                    audio_path = output_dir / f"audio_{int(time.time())}.mp3"
+                    tts.save(str(audio_path))
+                    
+                    st.audio(str(audio_path))
+                    st.info("💡 Tip: You can combine the video and audio using video editing software")
+                    
+                    with open(audio_path, 'rb') as f:
+                        st.download_button(
+                            label="📥 Download Audio",
+                            data=f,
+                            file_name=audio_path.name,
+                            mime="audio/mp3"
+                        )
+            
+        except Exception as e:
+            st.error(f"❌ Error generating video: {str(e)}")
+            st.info("💡 Troubleshooting tips:")
+            st.markdown("""
+            1. Make sure your Pinokio app is running
+            2. Check that the Gradio URL is correct
+            3. Click 'Test Connection' in the sidebar
+            4. Check the API endpoints using the sidebar info
+            """)
+            
+            with st.expander("🐛 Debug Info"):
+                st.code(str(e))
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+    <p>Powered by LTX-2 running on your local GPU 🚀</p>
+    <p>Make sure your Pinokio app is running before generating videos</p>
+</div>
+""", unsafe_allow_html=True)
