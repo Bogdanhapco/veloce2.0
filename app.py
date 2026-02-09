@@ -13,16 +13,20 @@ st.set_page_config(
 )
 
 # Title
-st.title("🎥 Veloce")
-st.markdown("Generate videos using Veloce model")
+st.title("🎥 AI Video Generator with LTX-2")
+st.markdown("Generate videos using your local GPU-powered LTX-2 model")
 
 # Sidebar for settings
 st.sidebar.header("⚙️ Settings")
 
-# Gradio URL input
+# Gradio URL input - check secrets first
+default_url = "https://5a84f7d44bed240468.gradio.live"
+if "GRADIO_URL" in st.secrets:
+    default_url = st.secrets["GRADIO_URL"]
+
 gradio_url = st.sidebar.text_input(
     "Gradio URL",
-    value="https://5a84f7d44bed240468.gradio.live",
+    value=default_url,
     help="The URL from your Pinokio Gradio instance (gradio.live link)"
 )
 
@@ -95,7 +99,7 @@ if st.button("🎬 Generate Video", type="primary", use_container_width=True):
             with st.spinner("Connecting to LTX-2 model..."):
                 client = Client(gradio_url)
             
-            st.info("🎨 Generating video... This may take a few minutes.")
+            st.info("🎨 Generating video... This may take a few minutes depending on your GPU.")
             
             # Progress bar
             progress_bar = st.progress(0)
@@ -108,8 +112,11 @@ if st.button("🎬 Generate Video", type="primary", use_container_width=True):
             progress_bar.progress(30)
             
             try:
-                # Try common Gradio endpoints
-                # Adjust based on your actual API (use client.view_api() to check)
+                # First, get the API info to find the correct endpoint
+                api_info = str(client.view_api())
+                
+                # Most Gradio apps use index 0 or the first function
+                # Try calling without specifying api_name (uses default)
                 result = client.predict(
                     prompt,
                     duration,
@@ -117,16 +124,24 @@ if st.button("🎬 Generate Video", type="primary", use_container_width=True):
                     height,
                     guidance_scale,
                     num_inference_steps,
-                    api_name="/generate"  # Change this if needed
                 )
                 
             except Exception as e:
-                # Fallback to simpler call
-                st.warning(f"Trying alternative API call... ({str(e)})")
-                result = client.predict(
-                    prompt,
-                    api_name="/predict"
-                )
+                st.warning(f"Trying simpler API call... ({str(e)})")
+                try:
+                    # Try with just the prompt
+                    result = client.predict(prompt)
+                except Exception as e2:
+                    # Try with api_name as index
+                    try:
+                        result = client.predict(
+                            prompt,
+                            api_name=0  # Try first endpoint
+                        )
+                    except Exception as e3:
+                        st.error(f"All API call attempts failed. Please check the endpoint name.")
+                        st.info("Click 'Test Connection' in sidebar to see available endpoints")
+                        raise e3
             
             progress_bar.progress(80)
             status_text.text("Processing output...")
